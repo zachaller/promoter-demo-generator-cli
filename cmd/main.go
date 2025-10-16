@@ -107,12 +107,25 @@ func runSimulation(cmd *cobra.Command, args []string) error {
 	// Monitor and print stats
 	go printStats(stats, done)
 
+	// Send initial commit to start building immediately
+	fmt.Println()
+	fmt.Println("📝 Initial commit detected: #1 (timestamp: " + time.Now().Format("15:04:05") + ")")
+	initialCommit := CommitEvent{
+		timestamp: time.Now(),
+		id:        1,
+	}
+	stats.mu.Lock()
+	stats.totalCommits++
+	stats.queuedCommits++
+	stats.mu.Unlock()
+	commitQueue <- initialCommit
+
 	// Wait for interrupt
 	select {}
 }
 
 func generateCommits(rateSpec string, commitQueue chan<- CommitEvent, stats *SimulationStats) {
-	commitID := 1
+	commitID := 2 // Start from 2 since initial commit is 1
 
 	for {
 		var waitDuration time.Duration
