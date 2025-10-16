@@ -185,27 +185,51 @@ func processBuildQueue(buildDuration time.Duration, commitQueue <-chan CommitEve
 	var buildTimer *time.Timer
 
 	for {
-		select {
-		case commit := <-commitQueue:
-			if abortOnNewCommit {
-				if currentBuild != nil {
-					// Abort current build
-					if buildTimer != nil {
-						buildTimer.Stop()
-					}
-					stats.mu.Lock()
-					stats.abortedBuilds++
-					stats.mu.Unlock()
-					fmt.Printf("❌ Build aborted for commit #%d due to new commit #%d\n",
-						currentBuild.id, commit.id)
-				}
+		if abortOnNewCommit {
+			// Abort mode: always listen for new commits
+			commit := <-commitQueue
 
-				// Start new build
+			if currentBuild != nil {
+				// Abort current build
+				if buildTimer != nil {
+					buildTimer.Stop()
+				}
+				stats.mu.Lock()
+				stats.abortedBuilds++
+				stats.mu.Unlock()
+				fmt.Printf("❌ Build aborted for commit #%d due to new commit #%d\n",
+					currentBuild.id, commit.id)
+			}
+
+			// Start new build
+			currentBuild = &commit
+			now := time.Now()
+			stats.mu.Lock()
+			stats.currentBuildStartTime = &now
+			stats.queuedCommits = 1 // Only current one in "queue"
+			stats.mu.Unlock()
+
+			fmt.Printf("🔨 Starting build for commit #%d (duration: %v)\n",
+				commit.id, buildDuration)
+
+			buildTimer = time.AfterFunc(buildDuration, func() {
+				completeBuild(*currentBuild, stats)
+				currentBuild = nil
+				stats.mu.Lock()
+				stats.currentBuildStartTime = nil
+				stats.queuedCommits = 0
+				stats.mu.Unlock()
+			})
+		} else {
+			// Queue mode: only consume commits when not building
+			if currentBuild == nil {
+				// No build in progress, wait for a commit
+				commit := <-commitQueue
 				currentBuild = &commit
 				now := time.Now()
 				stats.mu.Lock()
 				stats.currentBuildStartTime = &now
-				stats.queuedCommits = 1 // Only current one in "queue"
+				stats.queuedCommits--
 				stats.mu.Unlock()
 
 				fmt.Printf("🔨 Starting build for commit #%d (duration: %v)\n",
@@ -216,68 +240,11 @@ func processBuildQueue(buildDuration time.Duration, commitQueue <-chan CommitEve
 					currentBuild = nil
 					stats.mu.Lock()
 					stats.currentBuildStartTime = nil
-					stats.queuedCommits = 0
 					stats.mu.Unlock()
 				})
 			} else {
-				// Queue mode - just wait for current build to finish
-				if currentBuild == nil {
-					// No build in progress, start immediately
-					currentBuild = &commit
-					now := time.Now()
-					stats.mu.Lock()
-					stats.currentBuildStartTime = &now
-					stats.mu.Unlock()
-
-					fmt.Printf("🔨 Starting build for commit #%d (duration: %v)\n",
-						commit.id, buildDuration)
-
-					buildTimer = time.AfterFunc(buildDuration, func() {
-						completeBuild(*currentBuild, stats)
-
-						stats.mu.Lock()
-						stats.queuedCommits--
-						stats.mu.Unlock()
-
-						// Signal to check for next queued commit
-						buildControl <- true
-					})
-				} else {
-					fmt.Printf("⏳ Commit #%d queued (current queue size: %d)\n",
-						commit.id, stats.queuedCommits)
-				}
-			}
-
-		case <-buildControl:
-			// In queue mode, check if there are more commits to process
-			if !abortOnNewCommit {
-				select {
-				case commit := <-commitQueue:
-					currentBuild = &commit
-					now := time.Now()
-					stats.mu.Lock()
-					stats.currentBuildStartTime = &now
-					stats.mu.Unlock()
-
-					fmt.Printf("🔨 Starting build for commit #%d (duration: %v)\n",
-						commit.id, buildDuration)
-
-					buildTimer = time.AfterFunc(buildDuration, func() {
-						completeBuild(*currentBuild, stats)
-
-						stats.mu.Lock()
-						stats.queuedCommits--
-						stats.mu.Unlock()
-
-						buildControl <- true
-					})
-				default:
-					currentBuild = nil
-					stats.mu.Lock()
-					stats.currentBuildStartTime = nil
-					stats.mu.Unlock()
-					fmt.Println("✅ Queue empty, waiting for new commits...")
-				}
+				// Build in progress, just wait a bit
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
