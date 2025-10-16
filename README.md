@@ -34,6 +34,7 @@ go build -o promoter-demo-generator ./cmd/main.go
 | `--abortOnNewCommit` | bool | `false` | If `true`, restart build on new commits; if `false`, queue them |
 | `--simulatedCommitRate` | string | `1m` | Commit frequency: fixed (`1m`) or random range (`1m-5m`) |
 | `--manifestKustomizeFilePath` | string | *required* | Path to the `kustomization.yaml` file to modify |
+| `--skipGitOperations` | bool | `false` | If `true`, skip git commit and push operations |
 
 ## Examples
 
@@ -105,6 +106,24 @@ Simulates unpredictable commit patterns:
 - Builds complete in 2 minutes
 - Queue will build up slowly (1 commit per build cycle)
 
+### Example 5: Skip Git Operations (Testing Mode)
+
+If you want to test without committing to git:
+
+```bash
+./promoter-demo-generator \
+  --manifestKustomizeFilePath=./kustomization.yaml \
+  --simulatedBuildDuration=30s \
+  --simulatedCommitRate=10s \
+  --skipGitOperations=true
+```
+
+**Behavior**:
+- Fast simulation for testing
+- Updates the manifest file only
+- No git add, commit, or push operations
+- Useful when the manifest isn't in a git repository or for quick testing
+
 ## How It Works
 
 ### Abort on New Commit (true)
@@ -139,8 +158,26 @@ commonAnnotations:
 After each successful build:
 1. Version number is incremented
 2. File is saved
-3. Changes are committed to git
-4. Commit is pushed to remote
+3. Changes are committed to git (unless `--skipGitOperations=true`)
+4. Commit is pushed to remote (unless `--skipGitOperations=true`)
+
+### Git Commit Message Format
+
+Each git commit includes ArgoCD gitops-promoter trailers for integration with GitOps workflows:
+
+```
+chore: bump version to v1.0.232
+
+Argocd-reference-commit-author: Zach Aller <code@example.com>
+Argocd-reference-commit-sha: 9d5ccef278218dea4caa903bb6abb9ed974a1d90
+Argocd-reference-commit-subject: This change fixes a bug in the code v1.0.232
+Argocd-reference-commit-body: "Commit message of the code commit\n\nSigned-off-by: Author Name <author@example.com>"
+Argocd-reference-commit-repourl: https://github.com/argoproj-labs/gitops-promoter
+Argocd-reference-commit-date: 2025-10-01T08:23:45-04:00
+Signed-off-by: Zach Aller <zach_aller@intuit.com>
+```
+
+The `Argocd-reference-commit-date` is randomly generated to be 5-35 days in the past to simulate realistic scenarios.
 
 ## Output
 
@@ -164,7 +201,7 @@ Manifest File: ./kustomization.yaml
 Total Commits: 2
 Queued Commits: 2
 Completed Builds: 0
-Current Build Progress: 1m30s elapsed
+Current Build: Commit #1 (1m30s elapsed)
 ===================
 
 ✅ Build completed for commit #1
@@ -178,7 +215,7 @@ Current Build Progress: 1m30s elapsed
 - **Queued Commits**: Number of commits waiting to be built
 - **Completed Builds**: Number of successful builds
 - **Aborted Builds**: Number of builds canceled (abort mode only)
-- **Current Build Progress**: Time elapsed for the current build
+- **Current Build**: Shows the commit ID being built and time elapsed (e.g., `Commit #3 (2m15s elapsed)`)
 
 ## Testing
 
@@ -187,8 +224,31 @@ A sample `kustomization.yaml` file is included for testing purposes.
 ## Requirements
 
 - Go 1.25.1 or later
-- Git (for committing manifest changes)
+- Git (for committing manifest changes, unless using `--skipGitOperations`)
 - Write access to the manifest repository (if using git push)
+
+## Troubleshooting
+
+### Git Errors
+
+If you see git-related errors like `git add failed: exit status 128`, you have several options:
+
+1. **Check if the manifest is in a git repository**: The manifest file must be in a directory initialized with git
+   ```bash
+   cd /path/to/manifest
+   git status  # Should show it's a git repo
+   ```
+
+2. **Use skip flag**: If you don't want git operations:
+   ```bash
+   ./promoter-demo-generator --manifestKustomizeFilePath=./kustomization.yaml --skipGitOperations=true
+   ```
+
+3. **Check error details**: The CLI now shows detailed stderr output from git commands to help diagnose issues
+
+### Initial Commit
+
+The simulator automatically creates an initial commit when it starts, so you don't have to wait for the first `simulatedCommitRate` interval. The first build begins immediately.
 
 ## License
 
