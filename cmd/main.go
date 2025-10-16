@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,6 +22,7 @@ var (
 	abortOnNewCommit          bool
 	simulatedCommitRate       string
 	manifestKustomizeFilePath string
+	skipGitOperations         bool
 )
 
 type SimulationStats struct {
@@ -28,6 +31,7 @@ type SimulationStats struct {
 	queuedCommits         int
 	completedBuilds       int
 	currentBuildStartTime *time.Time
+	currentBuildCommitID  int
 	abortedBuilds         int
 }
 
@@ -64,6 +68,8 @@ Docker image builds, and completed builds result in Kubernetes manifest updates.
 		"Commit rate: fixed (e.g., '1m') or random range (e.g., '1m-5m')")
 	rootCmd.Flags().StringVar(&manifestKustomizeFilePath, "manifestKustomizeFilePath", "",
 		"Path to the kustomization.yaml file to modify")
+	rootCmd.Flags().BoolVar(&skipGitOperations, "skipGitOperations", false,
+		"If true, skip git commit and push operations")
 
 	rootCmd.MarkFlagRequired("manifestKustomizeFilePath")
 
@@ -206,6 +212,7 @@ func processBuildQueue(buildDuration time.Duration, commitQueue <-chan CommitEve
 			now := time.Now()
 			stats.mu.Lock()
 			stats.currentBuildStartTime = &now
+			stats.currentBuildCommitID = commit.id
 			stats.queuedCommits = 1 // Only current one in "queue"
 			stats.mu.Unlock()
 
@@ -217,6 +224,7 @@ func processBuildQueue(buildDuration time.Duration, commitQueue <-chan CommitEve
 				currentBuild = nil
 				stats.mu.Lock()
 				stats.currentBuildStartTime = nil
+				stats.currentBuildCommitID = 0
 				stats.queuedCommits = 0
 				stats.mu.Unlock()
 			})
@@ -229,6 +237,7 @@ func processBuildQueue(buildDuration time.Duration, commitQueue <-chan CommitEve
 				now := time.Now()
 				stats.mu.Lock()
 				stats.currentBuildStartTime = &now
+				stats.currentBuildCommitID = commit.id
 				stats.queuedCommits--
 				stats.mu.Unlock()
 
@@ -240,6 +249,7 @@ func processBuildQueue(buildDuration time.Duration, commitQueue <-chan CommitEve
 					currentBuild = nil
 					stats.mu.Lock()
 					stats.currentBuildStartTime = nil
+					stats.currentBuildCommitID = 0
 					stats.mu.Unlock()
 				})
 			} else {
@@ -314,32 +324,76 @@ func bumpManifestVersion() error {
 	}
 
 	// Git commit and push
-	if err := gitCommitAndPush(newVersion); err != nil {
-		fmt.Printf("⚠️  Git operations skipped or failed: %v\n", err)
-		// Don't return error - we still updated the file
+	if !skipGitOperations {
+		if err := gitCommitAndPush(newVersion); err != nil {
+			fmt.Printf("⚠️  Git operations failed: %v\n", err)
+			// Don't return error - we still updated the file
+		}
+	} else {
+		fmt.Printf("⚠️  Git operations skipped (--skipGitOperations=true)\n")
 	}
 
 	return nil
 }
 
 func gitCommitAndPush(version string) error {
-	// Git add
-	cmd := exec.Command("git", "add", manifestKustomizeFilePath)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git add failed: %w", err)
+	// Get absolute path and directory
+	absPath, err := filepath.Abs(manifestKustomizeFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Git commit
-	commitMsg := fmt.Sprintf("chore: bump version to %s", version)
-	cmd = exec.Command("git", "commit", "-m", commitMsg)
+	dir := filepath.Dir(absPath)
+	fileName := filepath.Base(absPath)
+
+	// Git add
+	cmd := exec.Command("git", "add", fileName)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git commit failed: %w", err)
+		return fmt.Errorf("git add failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	// Generate a random date older than 5 days
+	daysAgo := 5 + rand.Intn(30) // 5-35 days ago
+	hoursAgo := rand.Intn(24)
+	minutesAgo := rand.Intn(60)
+	secondsAgo := rand.Intn(60)
+
+	randomPastDate := time.Now().AddDate(0, 0, -daysAgo).
+		Add(-time.Duration(hoursAgo) * time.Hour).
+		Add(-time.Duration(minutesAgo) * time.Minute).
+		Add(-time.Duration(secondsAgo) * time.Second)
+
+	formattedDate := randomPastDate.Format("2006-01-02T15:04:05-07:00")
+
+	// Git commit with trailers
+	commitMsg := fmt.Sprintf(`chore: bump version to %s
+
+Argocd-reference-commit-author: Zach Aller <code@example.com>
+Argocd-reference-commit-sha: 9d5ccef278218dea4caa903bb6abb9ed974a1d90
+Argocd-reference-commit-subject: This change fixes a bug in the code %s
+Argocd-reference-commit-body: "Commit message of the code commit\n\nSigned-off-by: Author Name <author@example.com>"
+Argocd-reference-commit-repourl: https://github.com/argoproj-labs/gitops-promoter
+Argocd-reference-commit-date: %s
+Signed-off-by: Zach Aller <zach_aller@intuit.com>`, version, version, formattedDate)
+
+	cmd = exec.Command("git", "commit", "-m", commitMsg)
+	cmd.Dir = dir
+	stderr.Reset()
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git commit failed: %w (stderr: %s)", err, stderr.String())
 	}
 
 	// Git push
 	cmd = exec.Command("git", "push")
+	cmd.Dir = dir
+	stderr.Reset()
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git push failed: %w", err)
+		return fmt.Errorf("git push failed: %w (stderr: %s)", err, stderr.String())
 	}
 
 	return nil
@@ -363,7 +417,7 @@ func printStats(stats *SimulationStats, done chan bool) {
 
 			if stats.currentBuildStartTime != nil {
 				elapsed := time.Since(*stats.currentBuildStartTime)
-				fmt.Printf("Current Build Progress: %v elapsed\n", elapsed.Round(time.Second))
+				fmt.Printf("Current Build: Commit #%d (%v elapsed)\n", stats.currentBuildCommitID, elapsed.Round(time.Second))
 			} else {
 				fmt.Println("Current Build: None")
 			}
