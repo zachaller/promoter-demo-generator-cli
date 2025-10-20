@@ -65,7 +65,7 @@ Docker image builds, and completed builds result in Kubernetes manifest updates.
 	rootCmd.Flags().BoolVar(&abortOnNewCommit, "abortOnNewCommit", false,
 		"If true, restart build on new commit; if false, queue commits")
 	rootCmd.Flags().StringVar(&simulatedCommitRate, "simulatedCommitRate", "1m",
-		"Commit rate: fixed (e.g., '1m') or random range (e.g., '1m-5m')")
+		"Commit rate: fixed (e.g., '1m'), random range (e.g., '1m-5m'), or pattern (developer, burst, steady, sporadic, rapid)")
 	rootCmd.Flags().StringVar(&manifestKustomizeFilePath, "manifestKustomizeFilePath", "",
 		"Path to the kustomization.yaml file to modify")
 	rootCmd.Flags().BoolVar(&skipGitOperations, "skipGitOperations", false,
@@ -133,6 +133,92 @@ func runSimulation(cmd *cobra.Command, args []string) error {
 func generateCommits(rateSpec string, commitQueue chan<- CommitEvent, stats *SimulationStats) {
 	commitID := 2 // Start from 2 since initial commit is 1
 
+	// Check for pre-canned patterns
+	pattern := strings.ToLower(rateSpec)
+	switch pattern {
+	case "developer":
+		generateDeveloperPattern(commitQueue, stats, &commitID)
+	case "burst":
+		generateBurstPattern(commitQueue, stats, &commitID)
+	case "steady":
+		generateSteadyPattern(commitQueue, stats, &commitID)
+	case "sporadic":
+		generateSporadicPattern(commitQueue, stats, &commitID)
+	case "rapid":
+		generateRapidPattern(commitQueue, stats, &commitID)
+	default:
+		// Use custom duration-based pattern
+		generateCustomPattern(rateSpec, commitQueue, stats, &commitID)
+	}
+}
+
+// Developer pattern: Bursts of commits (3-7 commits in quick succession) followed by longer pauses
+func generateDeveloperPattern(commitQueue chan<- CommitEvent, stats *SimulationStats, commitID *int) {
+	for {
+		// Burst: 3-7 commits
+		burstSize := 3 + rand.Intn(5)
+		fmt.Printf("💥 Developer burst: %d commits incoming\n", burstSize)
+
+		for i := 0; i < burstSize; i++ {
+			if i > 0 {
+				// Short delay between commits in a burst (30s - 2min)
+				time.Sleep(time.Duration(30+rand.Intn(90)) * time.Second)
+			}
+
+			sendCommit(commitQueue, stats, commitID)
+		}
+
+		// Long pause between bursts (15-45 minutes)
+		pauseDuration := time.Duration(15+rand.Intn(31)) * time.Minute
+		fmt.Printf("😴 Developer taking a break for %v\n", pauseDuration.Round(time.Second))
+		time.Sleep(pauseDuration)
+	}
+}
+
+// Burst pattern: Frequent short bursts with medium pauses
+func generateBurstPattern(commitQueue chan<- CommitEvent, stats *SimulationStats, commitID *int) {
+	for {
+		// Small burst: 2-4 commits
+		burstSize := 2 + rand.Intn(3)
+
+		for i := 0; i < burstSize; i++ {
+			if i > 0 {
+				time.Sleep(time.Duration(20+rand.Intn(40)) * time.Second)
+			}
+			sendCommit(commitQueue, stats, commitID)
+		}
+
+		// Medium pause (5-10 minutes)
+		time.Sleep(time.Duration(5+rand.Intn(6)) * time.Minute)
+	}
+}
+
+// Steady pattern: Consistent commits every 2-5 minutes
+func generateSteadyPattern(commitQueue chan<- CommitEvent, stats *SimulationStats, commitID *int) {
+	for {
+		time.Sleep(time.Duration(2+rand.Intn(4)) * time.Minute)
+		sendCommit(commitQueue, stats, commitID)
+	}
+}
+
+// Sporadic pattern: Random commits with wide variance (1-30 minutes)
+func generateSporadicPattern(commitQueue chan<- CommitEvent, stats *SimulationStats, commitID *int) {
+	for {
+		time.Sleep(time.Duration(1+rand.Intn(30)) * time.Minute)
+		sendCommit(commitQueue, stats, commitID)
+	}
+}
+
+// Rapid pattern: High frequency commits (30s - 2min)
+func generateRapidPattern(commitQueue chan<- CommitEvent, stats *SimulationStats, commitID *int) {
+	for {
+		time.Sleep(time.Duration(30+rand.Intn(90)) * time.Second)
+		sendCommit(commitQueue, stats, commitID)
+	}
+}
+
+// Custom pattern: Original duration-based logic
+func generateCustomPattern(rateSpec string, commitQueue chan<- CommitEvent, stats *SimulationStats, commitID *int) {
 	for {
 		var waitDuration time.Duration
 
@@ -165,23 +251,27 @@ func generateCommits(rateSpec string, commitQueue chan<- CommitEvent, stats *Sim
 		}
 
 		time.Sleep(waitDuration)
-
-		commit := CommitEvent{
-			timestamp: time.Now(),
-			id:        commitID,
-		}
-
-		stats.mu.Lock()
-		stats.totalCommits++
-		stats.queuedCommits++
-		stats.mu.Unlock()
-
-		fmt.Printf("📝 New commit detected: #%d (timestamp: %s)\n",
-			commit.id, commit.timestamp.Format("15:04:05"))
-
-		commitQueue <- commit
-		commitID++
+		sendCommit(commitQueue, stats, commitID)
 	}
+}
+
+// Helper function to send a commit
+func sendCommit(commitQueue chan<- CommitEvent, stats *SimulationStats, commitID *int) {
+	commit := CommitEvent{
+		timestamp: time.Now(),
+		id:        *commitID,
+	}
+
+	stats.mu.Lock()
+	stats.totalCommits++
+	stats.queuedCommits++
+	stats.mu.Unlock()
+
+	fmt.Printf("📝 New commit detected: #%d (timestamp: %s)\n",
+		commit.id, commit.timestamp.Format("15:04:05"))
+
+	commitQueue <- commit
+	*commitID++
 }
 
 func processBuildQueue(buildDuration time.Duration, commitQueue <-chan CommitEvent,

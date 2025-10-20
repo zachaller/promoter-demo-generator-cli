@@ -32,9 +32,21 @@ go build -o promoter-demo-generator ./cmd/main.go
 |------|------|---------|-------------|
 | `--simulatedBuildDuration` | duration | `15m` | How long each simulated build takes (e.g., `15m`, `30s`, `1h`) |
 | `--abortOnNewCommit` | bool | `false` | If `true`, restart build on new commits; if `false`, queue them |
-| `--simulatedCommitRate` | string | `1m` | Commit frequency: fixed (`1m`) or random range (`1m-5m`) |
+| `--simulatedCommitRate` | string | `1m` | Commit frequency: fixed (`1m`), random range (`1m-5m`), or pattern name (see below) |
 | `--manifestKustomizeFilePath` | string | *required* | Path to the `kustomization.yaml` file to modify |
 | `--skipGitOperations` | bool | `false` | If `true`, skip git commit and push operations |
+
+### Pre-Canned Commit Rate Patterns
+
+Instead of specifying a duration, you can use these realistic patterns:
+
+| Pattern | Description | Behavior |
+|---------|-------------|----------|
+| `developer` | Realistic developer workflow | Bursts of 3-7 commits (30s-2min apart), then 15-45min pauses |
+| `burst` | Frequent small bursts | 2-4 commits (20-60s apart), then 5-10min pauses |
+| `steady` | Consistent pace | One commit every 2-5 minutes |
+| `sporadic` | Unpredictable timing | Random commits with 1-30 minute gaps |
+| `rapid` | High frequency | Continuous commits every 30s-2min |
 
 ## Examples
 
@@ -106,7 +118,42 @@ Simulates unpredictable commit patterns:
 - Builds complete in 2 minutes
 - Queue will build up slowly (1 commit per build cycle)
 
-### Example 5: Skip Git Operations (Testing Mode)
+### Example 5: Developer Pattern (Realistic Workflow)
+
+Simulates a real developer with bursts of activity:
+
+```bash
+./promoter-demo-generator \
+  --manifestKustomizeFilePath=./kustomization.yaml \
+  --simulatedBuildDuration=10m \
+  --abortOnNewCommit=false \
+  --simulatedCommitRate=developer
+```
+
+**Behavior**:
+- Developer makes 3-7 commits in quick succession (30s-2min apart)
+- Then takes a break for 15-45 minutes
+- Very realistic for testing how CI handles bursty workflows
+- Queue will build up during burst, then drain during pause
+
+### Example 6: Burst Pattern with Abort Mode
+
+Test how abort mode handles frequent bursts:
+
+```bash
+./promoter-demo-generator \
+  --manifestKustomizeFilePath=./kustomization.yaml \
+  --simulatedBuildDuration=15m \
+  --abortOnNewCommit=true \
+  --simulatedCommitRate=burst
+```
+
+**Behavior**:
+- Small bursts of 2-4 commits every 5-10 minutes
+- With abort mode, builds may frequently restart
+- Tests aggressive abort behavior
+
+### Example 7: Skip Git Operations (Testing Mode)
 
 If you want to test without committing to git:
 
@@ -114,17 +161,57 @@ If you want to test without committing to git:
 ./promoter-demo-generator \
   --manifestKustomizeFilePath=./kustomization.yaml \
   --simulatedBuildDuration=30s \
-  --simulatedCommitRate=10s \
+  --simulatedCommitRate=rapid \
   --skipGitOperations=true
 ```
 
 **Behavior**:
-- Fast simulation for testing
+- Fast simulation for testing with rapid commits
 - Updates the manifest file only
 - No git add, commit, or push operations
 - Useful when the manifest isn't in a git repository or for quick testing
 
 ## How It Works
+
+### Commit Rate Patterns Explained
+
+The simulator supports three ways to specify commit rates:
+
+1. **Fixed Rate**: Use a Go duration (e.g., `1m`, `30s`, `2h`)
+   - Commits arrive at exact intervals
+   - Example: `--simulatedCommitRate=2m` → commit every 2 minutes
+
+2. **Random Range**: Use two durations separated by a dash (e.g., `1m-5m`)
+   - Commits arrive at random intervals within the range
+   - Example: `--simulatedCommitRate=1m-10m` → commits between 1-10 minutes apart
+
+3. **Named Patterns**: Use a pattern name for realistic scenarios
+   - `developer`: Simulates realistic developer workflow with work bursts and breaks
+   - `burst`: Frequent small bursts of commits with medium pauses
+   - `steady`: Predictable, consistent commit rate
+   - `sporadic`: Highly variable, unpredictable commits
+   - `rapid`: Continuous high-frequency commits for stress testing
+
+#### Developer Pattern Deep Dive
+
+The `developer` pattern is particularly useful for realistic testing:
+
+```
+Time 0:00   → Burst starts: 5 commits over 4 minutes
+Time 0:00   → Commit #2
+Time 0:01:30 → Commit #3
+Time 0:02:15 → Commit #4  
+Time 0:03:00 → Commit #5
+Time 0:03:45 → Commit #6
+Time 0:04:00 → Developer break: 28 minutes
+Time 0:32:00 → Next burst starts...
+```
+
+This simulates:
+- Morning coding sessions
+- Post-lunch development
+- Bug fixing sprints
+- Breaks for meetings, lunch, code review
 
 ### Abort on New Commit (true)
 
@@ -192,10 +279,14 @@ Commit Rate: 1m
 Manifest File: ./kustomization.yaml
 =====================================
 
-📝 New commit detected: #1 (timestamp: 14:23:15)
+📝 Initial commit detected: #1 (timestamp: 14:23:15)
 🔨 Starting build for commit #1 (duration: 15m0s)
+💥 Developer burst: 4 commits incoming
 📝 New commit detected: #2 (timestamp: 14:24:15)
-⏳ Commit #2 queued (current queue size: 2)
+📝 New commit detected: #3 (timestamp: 14:25:30)
+📝 New commit detected: #4 (timestamp: 14:26:45)
+📝 New commit detected: #5 (timestamp: 14:27:20)
+😴 Developer taking a break for 25m
 
 📊 === Statistics ===
 Total Commits: 2
@@ -249,6 +340,18 @@ If you see git-related errors like `git add failed: exit status 128`, you have s
 ### Initial Commit
 
 The simulator automatically creates an initial commit when it starts, so you don't have to wait for the first `simulatedCommitRate` interval. The first build begins immediately.
+
+## Use Cases by Pattern
+
+| Use Case | Recommended Pattern | Why |
+|----------|-------------------|-----|
+| Test queue buildup and drainage | `developer` | Bursts create queues, pauses let them drain |
+| Stress test CI system | `rapid` | Continuous high-frequency commits |
+| Test abort mode effectiveness | `burst` + `--abortOnNewCommit=true` | Frequent interruptions |
+| Baseline performance testing | `steady` | Predictable, consistent load |
+| Test edge cases | `sporadic` | Wide variance catches timing issues |
+| Simulate real production | `developer` | Most realistic developer behavior |
+| Quick functionality test | `30s` + `--skipGitOperations=true` | Fast, simple validation |
 
 ## License
 
