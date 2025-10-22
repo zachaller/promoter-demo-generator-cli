@@ -20,14 +20,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type CommitReference struct {
+	SHA     string
+	Message string
+}
+
 var (
 	simulatedBuildDuration    string
 	abortOnNewCommit          bool
 	simulatedCommitRate       string
 	manifestKustomizeFilePath string
 	skipGitOperations         bool
-	commitSHAsCache           []string
-	commitSHAsMutex           sync.Mutex
+	commitRefsCache           []CommitReference
+	commitRefsMutex           sync.Mutex
 )
 
 type SimulationStats struct {
@@ -96,14 +101,17 @@ func runSimulation(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("manifest file does not exist: %s", manifestKustomizeFilePath)
 	}
 
-	// Fetch commit SHAs from GitHub
-	fmt.Println("🔍 Fetching commit SHAs from gitops-promoter repository...")
-	if err := fetchCommitSHAs(); err != nil {
+	// Fetch commit references from GitHub
+	fmt.Println("🔍 Fetching commits from gitops-promoter repository...")
+	if err := fetchCommitRefs(); err != nil {
 		fmt.Printf("⚠️  Warning: Could not fetch commits from GitHub: %v\n", err)
-		fmt.Println("   Using fallback commit SHA")
-		commitSHAsCache = []string{"9d5ccef278218dea4caa903bb6abb9ed974a1d90"}
+		fmt.Println("   Using fallback commit data")
+		commitRefsCache = []CommitReference{{
+			SHA:     "9d5ccef278218dea4caa903bb6abb9ed974a1d90",
+			Message: "chore: update configuration",
+		}}
 	} else {
-		fmt.Printf("✅ Loaded %d commit SHAs from repository\n", len(commitSHAsCache))
+		fmt.Printf("✅ Loaded %d commits from repository\n", len(commitRefsCache))
 	}
 
 	stats := &SimulationStats{}
@@ -152,7 +160,7 @@ type GitHubCommit struct {
 	} `json:"commit"`
 }
 
-func fetchCommitSHAs() error {
+func fetchCommitRefs() error {
 	// Fetch recent commits from the gitops-promoter repository
 	url := "https://api.github.com/repos/argoproj-labs/gitops-promoter/commits?per_page=100"
 
@@ -185,26 +193,32 @@ func fetchCommitSHAs() error {
 		return fmt.Errorf("no commits found")
 	}
 
-	// Extract SHAs
-	commitSHAsMutex.Lock()
-	commitSHAsCache = make([]string, len(commits))
+	// Extract SHAs and messages
+	commitRefsMutex.Lock()
+	commitRefsCache = make([]CommitReference, len(commits))
 	for i, commit := range commits {
-		commitSHAsCache[i] = commit.SHA
+		commitRefsCache[i] = CommitReference{
+			SHA:     commit.SHA,
+			Message: commit.Commit.Message,
+		}
 	}
-	commitSHAsMutex.Unlock()
+	commitRefsMutex.Unlock()
 
 	return nil
 }
 
-func getRandomCommitSHA() string {
-	commitSHAsMutex.Lock()
-	defer commitSHAsMutex.Unlock()
+func getRandomCommitRef() CommitReference {
+	commitRefsMutex.Lock()
+	defer commitRefsMutex.Unlock()
 
-	if len(commitSHAsCache) == 0 {
-		return "9d5ccef278218dea4caa903bb6abb9ed974a1d90" // fallback
+	if len(commitRefsCache) == 0 {
+		return CommitReference{
+			SHA:     "9d5ccef278218dea4caa903bb6abb9ed974a1d90",
+			Message: "chore: update configuration",
+		}
 	}
 
-	return commitSHAsCache[rand.Intn(len(commitSHAsCache))]
+	return commitRefsCache[rand.Intn(len(commitRefsCache))]
 }
 
 func generateCommits(rateSpec string, commitQueue chan<- CommitEvent, stats *SimulationStats) {
@@ -535,19 +549,38 @@ func gitCommitAndPush(version string) error {
 
 	formattedDate := randomPastDate.Format("2006-01-02T15:04:05-07:00")
 
-	// Get a random commit SHA from the cache
-	randomSHA := getRandomCommitSHA()
+	// Get a random commit reference from the cache
+	commitRef := getRandomCommitRef()
+
+	// Split commit message into subject and body
+	// Subject is the first line, body is everything after
+	parts := strings.SplitN(commitRef.Message, "\n", 2)
+	commitSubject := parts[0]
+	var commitBody string
+	if len(parts) > 1 {
+		// Remove leading newlines from body
+		commitBody = strings.TrimLeft(parts[1], "\n")
+	} else {
+		commitBody = ""
+	}
+
+	// JSON encode the commit body (without subject) to handle special characters and newlines
+	commitBodyJSON, jsonErr := json.Marshal(commitBody)
+	if jsonErr != nil {
+		// Fallback to escaped string if JSON encoding fails
+		commitBodyJSON = []byte(`"Failed to encode commit message"`)
+	}
 
 	// Git commit with trailers
 	commitMsg := fmt.Sprintf(`chore: bump version to %s
 
 Argocd-reference-commit-author: Zach Aller <code@example.com>
 Argocd-reference-commit-sha: %s
-Argocd-reference-commit-subject: This change fixes a bug in the code %s
-Argocd-reference-commit-body: "Commit message of the code commit\n\nSigned-off-by: Author Name <author@example.com>"
+Argocd-reference-commit-subject: %s
+Argocd-reference-commit-body: %s
 Argocd-reference-commit-repourl: https://github.com/argoproj-labs/gitops-promoter
 Argocd-reference-commit-date: %s
-Signed-off-by: Zach Aller <zach_aller@intuit.com>`, version, randomSHA, version, formattedDate)
+Signed-off-by: Zach Aller <zach_aller@intuit.com>`, version, commitRef.SHA, commitSubject, string(commitBodyJSON), formattedDate)
 
 	cmd = exec.Command("git", "commit", "-m", commitMsg)
 	cmd.Dir = dir

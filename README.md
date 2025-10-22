@@ -256,9 +256,9 @@ Each git commit includes ArgoCD gitops-promoter trailers for integration with Gi
 chore: bump version to v1.0.232
 
 Argocd-reference-commit-author: Zach Aller <code@example.com>
-Argocd-reference-commit-sha: 8f3a9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a
-Argocd-reference-commit-subject: This change fixes a bug in the code v1.0.232
-Argocd-reference-commit-body: "Commit message of the code commit\n\nSigned-off-by: Author Name <author@example.com>"
+Argocd-reference-commit-sha: d5e0d9386f4d88d05dc4bb08ca73633d03b6c3f5
+Argocd-reference-commit-subject: chore(deps): bump actions/create-github-app-token from 1 to 2 (#628)
+Argocd-reference-commit-body: "Bumps [actions/create-github-app-token](https://github.com/actions/create-github-app-token) from 1 to 2.\n\nCo-authored-by: dependabot[bot] \u003csupport@github.com\u003e"
 Argocd-reference-commit-repourl: https://github.com/argoproj-labs/gitops-promoter
 Argocd-reference-commit-date: 2025-10-01T08:23:45-04:00
 Signed-off-by: Zach Aller <zach_aller@intuit.com>
@@ -266,18 +266,40 @@ Signed-off-by: Zach Aller <zach_aller@intuit.com>
 
 **Dynamic Commit References:**
 - The `Argocd-reference-commit-sha` is randomly selected from **real commits** fetched from the [gitops-promoter repository](https://github.com/argoproj-labs/gitops-promoter)
+- The `Argocd-reference-commit-subject` contains the **first line** (subject) of the actual commit message
+- The `Argocd-reference-commit-body` contains **only the body** (everything after the subject line), **JSON-encoded** to properly handle special characters, newlines, and quotes
+- Subject and body are properly separated - the subject is NOT duplicated in the body
 - At startup, the CLI fetches the 100 most recent commits via GitHub API
-- Each manifest update uses a different random commit SHA for realistic simulation
+- Each manifest update uses a different random commit SHA and its associated message for realistic simulation
 - The `Argocd-reference-commit-date` is randomly generated to be 5-35 days in the past
-- If GitHub is unavailable, falls back to a static commit SHA
+- JSON encoding ensures proper escaping: newlines become `\n`, quotes become `\"`, etc.
+- If GitHub is unavailable, falls back to a static commit SHA and message
+
+**Why JSON Encoding?**
+
+Real commit messages contain special characters that need proper escaping in git trailers:
+
+| Full Commit Message | Subject | Body (JSON Encoded) |
+|---------------------|---------|---------------------|
+| `fix: bug in parser` | `fix: bug in parser` | `""` (empty) |
+| `feat: add feature\n\nDetailed description` | `feat: add feature` | `"Detailed description"` |
+| `fix: handle "quotes"\n\nWith details` | `fix: handle "quotes"` | `"With details"` |
+| `chore: update\n\nCo-authored-by: Dev <dev@example.com>` | `chore: update` | `"Co-authored-by: Dev \u003cdev@example.com\u003e"` |
+
+**Key Points:**
+- The subject (first line) is extracted and used as-is in `Argocd-reference-commit-subject`
+- The body (remaining lines after subject) is JSON-encoded in `Argocd-reference-commit-body`
+- Subject is never duplicated in the body
+- Empty bodies are encoded as `""` (empty JSON string)
+- This ensures commit data is safely embedded in git trailers and can be properly parsed by GitOps tools
 
 ## Output
 
 The CLI provides real-time feedback:
 
 ```
-🔍 Fetching commit SHAs from gitops-promoter repository...
-✅ Loaded 100 commit SHAs from repository
+🔍 Fetching commits from gitops-promoter repository...
+✅ Loaded 100 commits from repository
 🚀 Starting CI/CD Pipeline Simulation
 =====================================
 Build Duration: 15m0s
