@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +26,8 @@ var (
 	simulatedCommitRate       string
 	manifestKustomizeFilePath string
 	skipGitOperations         bool
+	commitSHAsCache           []string
+	commitSHAsMutex           sync.Mutex
 )
 
 type SimulationStats struct {
@@ -91,6 +96,16 @@ func runSimulation(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("manifest file does not exist: %s", manifestKustomizeFilePath)
 	}
 
+	// Fetch commit SHAs from GitHub
+	fmt.Println("🔍 Fetching commit SHAs from gitops-promoter repository...")
+	if err := fetchCommitSHAs(); err != nil {
+		fmt.Printf("⚠️  Warning: Could not fetch commits from GitHub: %v\n", err)
+		fmt.Println("   Using fallback commit SHA")
+		commitSHAsCache = []string{"9d5ccef278218dea4caa903bb6abb9ed974a1d90"}
+	} else {
+		fmt.Printf("✅ Loaded %d commit SHAs from repository\n", len(commitSHAsCache))
+	}
+
 	stats := &SimulationStats{}
 	commitQueue := make(chan CommitEvent, 100)
 	buildControl := make(chan bool, 1)
@@ -128,6 +143,68 @@ func runSimulation(cmd *cobra.Command, args []string) error {
 
 	// Wait for interrupt
 	select {}
+}
+
+type GitHubCommit struct {
+	SHA    string `json:"sha"`
+	Commit struct {
+		Message string `json:"message"`
+	} `json:"commit"`
+}
+
+func fetchCommitSHAs() error {
+	// Fetch recent commits from the gitops-promoter repository
+	url := "https://api.github.com/repos/argoproj-labs/gitops-promoter/commits?per_page=100"
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	// Set user agent as required by GitHub API
+	req.Header.Set("User-Agent", "promoter-demo-generator")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var commits []GitHubCommit
+	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+		return err
+	}
+
+	if len(commits) == 0 {
+		return fmt.Errorf("no commits found")
+	}
+
+	// Extract SHAs
+	commitSHAsMutex.Lock()
+	commitSHAsCache = make([]string, len(commits))
+	for i, commit := range commits {
+		commitSHAsCache[i] = commit.SHA
+	}
+	commitSHAsMutex.Unlock()
+
+	return nil
+}
+
+func getRandomCommitSHA() string {
+	commitSHAsMutex.Lock()
+	defer commitSHAsMutex.Unlock()
+
+	if len(commitSHAsCache) == 0 {
+		return "9d5ccef278218dea4caa903bb6abb9ed974a1d90" // fallback
+	}
+
+	return commitSHAsCache[rand.Intn(len(commitSHAsCache))]
 }
 
 func generateCommits(rateSpec string, commitQueue chan<- CommitEvent, stats *SimulationStats) {
@@ -458,16 +535,19 @@ func gitCommitAndPush(version string) error {
 
 	formattedDate := randomPastDate.Format("2006-01-02T15:04:05-07:00")
 
+	// Get a random commit SHA from the cache
+	randomSHA := getRandomCommitSHA()
+
 	// Git commit with trailers
 	commitMsg := fmt.Sprintf(`chore: bump version to %s
 
 Argocd-reference-commit-author: Zach Aller <code@example.com>
-Argocd-reference-commit-sha: 9d5ccef278218dea4caa903bb6abb9ed974a1d90
+Argocd-reference-commit-sha: %s
 Argocd-reference-commit-subject: This change fixes a bug in the code %s
 Argocd-reference-commit-body: "Commit message of the code commit\n\nSigned-off-by: Author Name <author@example.com>"
 Argocd-reference-commit-repourl: https://github.com/argoproj-labs/gitops-promoter
 Argocd-reference-commit-date: %s
-Signed-off-by: Zach Aller <zach_aller@intuit.com>`, version, version, formattedDate)
+Signed-off-by: Zach Aller <zach_aller@intuit.com>`, version, randomSHA, version, formattedDate)
 
 	cmd = exec.Command("git", "commit", "-m", commitMsg)
 	cmd.Dir = dir

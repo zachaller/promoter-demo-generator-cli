@@ -256,7 +256,7 @@ Each git commit includes ArgoCD gitops-promoter trailers for integration with Gi
 chore: bump version to v1.0.232
 
 Argocd-reference-commit-author: Zach Aller <code@example.com>
-Argocd-reference-commit-sha: 9d5ccef278218dea4caa903bb6abb9ed974a1d90
+Argocd-reference-commit-sha: 8f3a9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a
 Argocd-reference-commit-subject: This change fixes a bug in the code v1.0.232
 Argocd-reference-commit-body: "Commit message of the code commit\n\nSigned-off-by: Author Name <author@example.com>"
 Argocd-reference-commit-repourl: https://github.com/argoproj-labs/gitops-promoter
@@ -264,13 +264,20 @@ Argocd-reference-commit-date: 2025-10-01T08:23:45-04:00
 Signed-off-by: Zach Aller <zach_aller@intuit.com>
 ```
 
-The `Argocd-reference-commit-date` is randomly generated to be 5-35 days in the past to simulate realistic scenarios.
+**Dynamic Commit References:**
+- The `Argocd-reference-commit-sha` is randomly selected from **real commits** fetched from the [gitops-promoter repository](https://github.com/argoproj-labs/gitops-promoter)
+- At startup, the CLI fetches the 100 most recent commits via GitHub API
+- Each manifest update uses a different random commit SHA for realistic simulation
+- The `Argocd-reference-commit-date` is randomly generated to be 5-35 days in the past
+- If GitHub is unavailable, falls back to a static commit SHA
 
 ## Output
 
 The CLI provides real-time feedback:
 
 ```
+🔍 Fetching commit SHAs from gitops-promoter repository...
+✅ Loaded 100 commit SHAs from repository
 🚀 Starting CI/CD Pipeline Simulation
 =====================================
 Build Duration: 15m0s
@@ -317,6 +324,7 @@ A sample `kustomization.yaml` file is included for testing purposes.
 - Go 1.25.1 or later
 - Git (for committing manifest changes, unless using `--skipGitOperations`)
 - Write access to the manifest repository (if using git push)
+- Internet connection (for fetching commit SHAs from GitHub - optional, will use fallback if unavailable)
 
 ## Troubleshooting
 
